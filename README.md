@@ -17,7 +17,6 @@ vim ~/.orbstack/config/docker.json
 }
 ```
 
-
 ### kube-ps1
 
 ```
@@ -158,3 +157,317 @@ docker run -p 8080:80 \
 [Getting started with Portainer using Kind](https://yashsrivastav.hashnode.dev/getting-started-with-portainer-using-kind)
 
 ![](https://cdn.hashnode.com/res/hashnode/image/upload/v1652346752573/aAA-8szVG.png)
+
+### Harbor
+Kind 클러스터와 Harbor를 연동하는 패턴은 로컬 개발 환경에서 **가장 프로페셔널한 설정**입니다. 이미지 백업/복구 없이 `docker push` 한 번으로 모든 노드가 이미지를 공유할 수 있기 때문입니다.
+
+가장 일반적인 **"자체 서명 인증서(Self-signed)를 사용하는 Harbor + Kind"** 연동 가이드를 정리해 드립니다.
+
+---
+
+### 1. Harbor 준비 (Quick Check)
+
+Harbor가 설치되어 있고, 외부에서 접속 가능한 상태라고 가정합니다.
+
+* **Harbor 주소:** `harbor.local` (또는 IP 주소)
+* **프로젝트 이름:** `my-project`
+
+---
+
+### 2. Kind 클러스터 설정 (`kind-config.yaml`)
+
+Kind 노드 내부의 `containerd`가 Harbor를 신뢰하고 바라보도록 설정해야 합니다. 특히 **HTTPS 인증서 오류**를 방지하는 설정이 핵심입니다.
+
+```yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+- role: worker
+- role: worker
+containerdConfigPatches:
+- |-
+  # 1. Harbor를 미러 레지스트리로 등록
+  [plugins."io.containerd.grpc.v1.cri".registry.mirrors."harbor.local"]
+    endpoint = ["https://harbor.local"]
+
+  # 2. 자체 서명 인증서(Insecure) 허용 설정
+  [plugins."io.containerd.grpc.v1.cri".registry.configs."harbor.local".tls]
+    insecure_skip_verify = true
+
+```
+
+*설정 후 클러스터 생성:* `kind create cluster --config kind-config.yaml`
+
+---
+
+### 3. Kubernetes 인증 설정 (`imagePullSecret`)
+
+Harbor 프로젝트가 비공개(Private)인 경우, 쿠버네티스가 이미지를 가져올 권한이 필요합니다.
+
+```bash
+# harbor-creds라는 이름의 시크릿 생성
+kubectl create secret docker-registry harbor-creds \
+  --docker-server=harbor.local \
+  --docker-username='admin' \
+  --docker-password='HarborPassword123' \
+  --email='admin@example.com'
+
+```
+
+---
+
+### 4. 이미지 워크플로우 (실습)
+
+**① 호스트에서 이미지 푸시**
+
+```bash
+# 로컬 이미지를 Harbor용으로 태깅
+docker tag starrocks/fe-ubuntu:3.5-latest harbor.local/my-project/starrocks-fe:3.5
+
+# Harbor로 푸시
+docker push harbor.local/my-project/starrocks-fe:3.5
+
+```
+
+**② YAML에서 사용 (`deployment.yaml`)**
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: starrocks-fe
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+      - name: fe
+        image: harbor.local/my-project/starrocks-fe:3.5 # Harbor 주소 포함
+      imagePullSecrets:
+      - name: harbor-creds # 위에서 만든 시크릿 지정
+
+```
+
+---
+
+### 5. (중요) 도메인 인식 문제 해결 (DNS/Hosts)
+
+Kind 노드(컨테이너)는 호스트의 `/etc/hosts`를 자동으로 참조하지 못할 수 있습니다. `harbor.local`이라는 도메인을 노드들이 알게 하려면 두 가지 방법이 있습니다.
+
+**방법 A: IP 주소 사용**
+위 설정에서 `harbor.local` 대신 Harbor 서버의 **실제 LAN IP**를 사용합니다. (가장 추천)
+
+**방법 B: Kind 설정에 Extra Hosts 추가**
+
+```yaml
+nodes:
+- role: control-plane
+  extraPortMappings: []
+  # 노드 안에 /etc/hosts 설정을 강제로 주입
+  extraMounts: []
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "my-label=true"
+# ... (중략) ...
+# 아래 설정을 추가하여 모든 노드가 harbor.local IP를 알게 함
+- |-
+  [plugins."io.containerd.grpc.v1.cri".registry.mirrors."harbor.local"]
+    endpoint = ["https://harbor.local"]
+
+```
+
+*(사실 방법 A처럼 IP를 쓰는 게 정신 건강에 가장 이롭습니다.)*
+
+---
+
+### 💡 요약
+
+1. **Kind 생성 시:** `containerdConfigPatches`로 Harbor IP/도메인을 등록한다.
+2. **K8s 내에서:** `imagePullSecret`을 만들어 권한을 준다.
+3. **사용 시:** 이미지 주소 앞에 `HarborIP/Project/`를 붙인다.
+
+**혹시 Harbor 설치부터 막히시는 상황인가요? 아니면 위 설정 중 `insecure_skip_verify` 적용 단계에서 도움이 더 필요하신가요?**
+
+### nginx test
+
+```
+kubectl label namespace default istio-injection=enabled
+
+cat << EOS | kubectl apply -n default -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  labels:
+    app: nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.24.0
+        ports:
+        - containerPort: 80
+EOS
+
+# 서비스 테스트
+kubectl expose deployment nginx --port=80 --type=LoadBalancer
+
+
+
+
+# Cilium 포드 중 하나를 선택해 서비스 리스트 확인
+kubectl -n kube-system exec -it ds/cilium -- cilium-dbg service list
+
+alias cilium-dbg='kubectl -n kube-system exec -it ds/cilium -- cilium-dbg'
+
+# 이제 로컬에서 바로 실행 가능
+cilium-dbg service list
+
+
+k get CiliumLoadBalancerIPPool ipam
+
+
+docker run -d --rm --name mypc --network kind  nicolaka/netshoot sleep infinity
+
+docker exec -it mypc bash
+ 
+curl http://172.16.1.65
+
+
+```
+
+### 그림과 실습으로 배우는 쿠버네티스 입문
+
+https://github.com/gilbutITbook/080437
+
+```bash
+git clone https://github.com/gilbutITbook/080437.git
+```
+
+```
+cat <<EOF | kubectl apply --namespace default -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp
+  labels:
+    app: myapp
+spec:
+  containers:
+  - name: hello-server
+    image: blux2/hello-server:1.0
+    ports:
+    - containerPort: 8080
+EOF
+
+kubectl get pod myapp -o jsonpath='{.spec.containers[0].name}'
+
+kubectl debug --stdin --tty myapp --image=curlimages/curl:8.4.0 --target=hello-server -n default -- sh
+
+
+k -n default run busybox --image=busybox:1.36.1 --rm --stdin --tty --restart=Never --command -- nsl
+ookup google.com
+
+
+k -n default run curlpod --image=curlimages/curl:8.4.0 --command -- /bin/sh -c "tail -f /dev/null"
+
+k -n default exec -it curlpod -- /bin/sh
+
+
+k -n default run netshoot --image=nicolaka/netshoot --command -- /bin/sh -c "tail -f /dev/null"
+
+
+k -n default exec -it netshoot -- /bin/sh
+
+
+k port-forward myapp 5555:8080 -n default
+
+
+k api-resources
+
+brew install stern
+brew install kube-ps1
+
+```
+
+
+
+1. pod 내에서 애플리케이션 접속 확인하기
+	```
+	k get po
+
+	kubectl get pod hello-server-6cc6b44795-6vd57 -o jsonpath='{.spec.containers[*].name}'
+
+	kubectl describe pod hello-server-6cc6b44795-6vd57
+
+	kubectl get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].image}{"\n"}{end}'
+
+	k debug --stdin --tty hello-server-6cc6b44795-6vd57 --image=curlimages/curl:8.4.0 --profile=general -- sh 
+	```
+
+2. 클러스터 내 별도의 pod 로부터 접속 확인하기
+
+	```
+	kubectl get pods -o custom-columns=NAME:.metadata.name,IP:.status.podIP
+
+	k run curl --image=curlimages/curl:8.4.0 --rm --stdin --tty --restart=Never --command -- curl 10.10.1.26:8080 
+	```
+
+3. 클러스터 내 별도의 Pod로부터 Service를 통해 접속 확인하기
+
+	```
+	kubectl get svc -o custom-columns=NAME:.metadata.name,IP:.spec.clusterIP
+	
+	k run curl --image=curlimages/curl:8.4.0 --rm --stdin --tty --restart=Never --command -- curl 10.11.4.116:8080 
+	```
+
+
+![](https://img1.daumcdn.net/thumb/R1280x0/?scode=mtistory2&fname=https%3A%2F%2Fblog.kakaocdn.net%2Fdna%2FdH14X9%2FdJMcahJXgqp%2FAAAAAAAAAAAAAAAAAAAAAItzMWlrnszyZkxsYVpg-9YlKmFJ6ZbiDQsONjhmqR7v%2Fimg.png%3Fcredential%3DyqXZFxpELC7KVnFOS48ylbz2pIh7yKj8%26expires%3D1774969199%26allow_ip%3D%26allow_referer%3D%26signature%3D2SKkpGoVfbsQceLQyPIdp3oGmuQ%253D)
+
+![](https://img1.daumcdn.net/thumb/R1280x0/?scode=mtistory2&fname=https%3A%2F%2Fblog.kakaocdn.net%2Fdna%2Fcwfm0P%2FdJMcajuaFGi%2FAAAAAAAAAAAAAAAAAAAAAGQafShayRl_qkr0Oxq8BdkRblvkh_yP-8_18okZxIzu%2Fimg.png%3Fcredential%3DyqXZFxpELC7KVnFOS48ylbz2pIh7yKj8%26expires%3D1774969199%26allow_ip%3D%26allow_referer%3D%26signature%3D%252BClgAElh00kAKLx1ld39tsMBRDo%253D)
+
+
+### 그림으로 이해하는 도커와 쿠버네티스 
+
+https://github.com/gilbutITbook/080434
+
+
+```
+git clone https://github.com/gilbutITbook/080434.git
+
+cd 08043/hello
+
+docker build -f Dockerfile . -t hello
+
+mkdir tmp
+docker save hello:latest | tar -xC tmp
+
+# image layers
+docker create --name temp_container hello:latest
+
+docker export temp_container | tar -xC tmp
+
+dive hello:latest
+
+docker history --no-trunc hello:latest
+
+# skopeo
+
+skopeo inspect docker://docker.io/library/hello:latest
+
+skopeo inspect docker-daemon:hello:latest
+
+```
+
