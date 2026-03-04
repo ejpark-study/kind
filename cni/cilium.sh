@@ -24,14 +24,6 @@ kubeadmConfigPatches:
   evictionHard:
     nodefs.available: "0%"
 
-# MetalLB 등 로드밸런서 연동 시 필수 설정
-# - |
-#   apiVersion: kubeproxy.config.k8s.io/v1alpha1
-#   kind: KubeProxyConfiguration
-#   mode: "ipvs"
-#   ipvs:
-#     strictARP: true
-
 kubeadmConfigPatchesJSON6902:
 - group: kubeadm.k8s.io
   version: v1beta3
@@ -39,11 +31,11 @@ kubeadmConfigPatchesJSON6902:
   patch: |
     - op: add
       path: /apiServer/certSANs/-
-      value: kind 
+      value: kind
 
 networking:
   disableDefaultCNI: true
-  kubeProxyMode: "none" 
+  kubeProxyMode: "none"
   podSubnet: "${POD_SUBNET}"
   serviceSubnet: "${SVC_SUBNET}"
 
@@ -63,17 +55,26 @@ nodes:
     apiVersion: kubelet.config.k8s.io/v1beta1
     kind: KubeletConfiguration
     evictionHard:
-      nodefs.available: "0%"	
+      nodefs.available: "0%"
+  extraMounts:
+  - hostPath: ${VOLUME_PATH}/shared
+    containerPath: /shared
 - role: worker
   extraMounts:
+  - hostPath: ${VOLUME_PATH}/shared
+    containerPath: /shared
   - hostPath: ${VOLUME_PATH}/worker1/data
     containerPath: /var/local-path-provisioner
 - role: worker
   extraMounts:
+  - hostPath: ${VOLUME_PATH}/shared
+    containerPath: /shared
   - hostPath: ${VOLUME_PATH}/worker2/data
     containerPath: /var/local-path-provisioner
 - role: worker
   extraMounts:
+  - hostPath: ${VOLUME_PATH}/shared
+    containerPath: /shared
   - hostPath: ${VOLUME_PATH}/worker3/data
     containerPath: /var/local-path-provisioner
 EOF
@@ -150,7 +151,7 @@ spec:
       stop: "172.16.1.240"
 EOF
 
-kubectl describe ippools -n kube-system 
+kubectl describe ippools -n kube-system
 
 # CiliumNodeConfig 설정
 cat <<EOF | kubectl apply -f -
@@ -166,9 +167,9 @@ spec:
     l2-announcements-all-interfaces: "true"
 EOF
 
-kubectl describe ciliumnodeconfig -n kube-system 
+kubectl describe ciliumnodeconfig -n kube-system
 
-kubectl describe ciliumnodes -n kube-system 
+kubectl describe ciliumnodes -n kube-system
 
 kubectl get ciliuml2announcementpolicies,ciliumloadbalancerippools,ciliumnodeconfig,ciliumnodes -n kube-system
 

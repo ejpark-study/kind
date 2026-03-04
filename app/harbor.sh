@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 
 curl -Ls https://github.com/goharbor/harbor/releases/download/v2.14.2/harbor-online-installer-v2.14.2.tgz | tar xvz 
 

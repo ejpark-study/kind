@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
-# Flannel 기본 대역
-POD_SUBNET=10.244.0.0/16
+POD_SUBNET=10.10.0.0/16
 SVC_SUBNET=10.11.0.0/16
 echo "POD_SUBNET: ${POD_SUBNET}, SVC_SUBNET: ${SVC_SUBNET}"
 
@@ -14,7 +13,7 @@ echo "HOST_IP: ${HOST_IP}"
 NODE_VERSION=v1.35.0
 echo "NODE_VERSION: ${NODE_VERSION}"
 
-cat <<EOF > kind-flannel.yaml
+cat <<EOF > kind-calico.yaml
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 
@@ -24,13 +23,6 @@ kubeadmConfigPatches:
   kind: KubeletConfiguration
   evictionHard:
     nodefs.available: "0%"
-# MetalLB 등 로드밸런서 연동 시 필수 설정
-- |
-  apiVersion: kubeproxy.config.k8s.io/v1alpha1
-  kind: KubeProxyConfiguration
-  mode: "ipvs"
-  ipvs:
-    strictARP: true
 
 kubeadmConfigPatchesJSON6902:
 - group: kubeadm.k8s.io
@@ -39,11 +31,11 @@ kubeadmConfigPatchesJSON6902:
   patch: |
     - op: add
       path: /apiServer/certSANs/-
-      value: kind 
+      value: kind
 
 networking:
-  # Flannel 설치를 위해 기본 CNI 비활성화
   disableDefaultCNI: true
+  kubeProxyMode: "iptables" 
   podSubnet: "${POD_SUBNET}"
   serviceSubnet: "${SVC_SUBNET}"
 
@@ -90,29 +82,31 @@ EOF
 kind create cluster \
   --name kind \
   --image=kindest/node:${NODE_VERSION} \
-  --config=kind-flannel.yaml
+  --config=kind-calico.yaml
 
 kind get clusters
 
-read -p "CNI: Flannel 설치를 진행하시겠습니까? (y/n): " confirm
-if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-    exit 1
-fi
+# Helm 저장소 추가
+helm repo add projectcalico https://docs.tigera.io/calico/charts
 
-# 설치 순서 (Flannel -> MetalLB -> Istio)
+# 저장소 최신화
+helm repo update
 
-# Flannel 설치
-kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+# tigera-operator 네임스페이스 생성
+kubectl create namespace calico-system
 
-kubectl wait --for=condition=Ready nodes --all --timeout=300s
+# 2. Helm 설치
+helm install calico projectcalico/tigera-operator \
+  --version v3.29.1 \
+  --namespace calico-system \
+  --create-namespace \
+  --set "installation.calicoNetwork.ipPools[0].cidr=10.10.0.0/16"
 
-# 1. CNI 플러그인 바이너리 다운로드 및 모든 노드에 설치
-# (v1.4.0은 v1.35.0 노드의 아키텍처와 잘 호환됩니다)
-for node in $(kind get nodes); do
-  echo "Installing CNI bridge plugins on $node..."
-  docker exec -it "$node" bash -c "
-    curl -L https://github.com/containernetworking/plugins/releases/download/v1.4.0/cni-plugins-linux-amd64-v1.4.0.tgz -o /tmp/cni-plugins.tgz && \
-    tar -xzf /tmp/cni-plugins.tgz -C /opt/cni/bin && \
-    rm /tmp/cni-plugins.tgz
-  "
-done
+# 3. 중요: Operator가 준비될 때까지 대기
+kubectl wait --namespace calico-system \
+  --for=condition=ready pod \
+  --selector=k8s-app=tigera-operator \
+  --timeout=90s
+
+# 4. Calico 시스템 Pod 생성 확인
+kubectl get pods -n calico-system

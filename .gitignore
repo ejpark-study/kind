@@ -1,3 +1,7 @@
+.DS_Store
+.python-version
+data
 images
 volume
-.DS_Store
+kind-cilium.yaml
+kind-flannel.yaml
