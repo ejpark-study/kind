@@ -61,6 +61,8 @@ export PATH="/Users/ejpark/.rd/bin:$PATH"
 
 alias python="python3"
 alias k="kubectl"
+alias kx='kubectx'
+alias kn='kubens'
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8

@@ -6,6 +6,7 @@
 # docker save starrocks/be-ubuntu:3.5-latest > images/starrocks-be.tar
 # docker save starrocks/fe-ubuntu:3.5-latest > images/starrocks-fe.tar
 
+echo "kind load image-archive"
 kind load image-archive images/starrocks-fe.tar --name kind
 kind load image-archive images/starrocks-be.tar --name kind
 
@@ -15,24 +16,25 @@ helm repo add starrocks https://starrocks.github.io/starrocks-kubernetes-operato
 # 레포지토리 업데이트
 helm repo update
 
-helm uninstall starrocks -n starrocks
+# helm uninstall starrocks -n starrocks
 
-REPLICAS=3
+FE_REPLICAS=1
+BE_REPLICAS=3
 STORAGE_SIZE=70Gi
 echo "REPLICAS: $REPLICAS, STORAGE_SIZE: $STORAGE_SIZE"
 
 helm upgrade --install starrocks starrocks/kube-starrocks \
   --namespace starrocks \
   --create-namespace \
-  --set starrocks.starrocksFESpec.replicas=1 \
-  --set starrocks.starrocksFESpec.resources.requests.cpu=1 \
-  --set starrocks.starrocksFESpec.resources.requests.memory=2Gi \
-  --set starrocks.starrocksFESpec.resources.limits.memory=2Gi \
+  --set starrocks.starrocksFESpec.replicas=${FE_REPLICAS} \
+  --set starrocks.starrocksFESpec.resources.requests.cpu=2 \
+  --set starrocks.starrocksFESpec.resources.requests.memory=4Gi \
+  --set starrocks.starrocksFESpec.resources.limits.memory=4Gi \
   --set starrocks.starrocksFESpec.storageSpec.name=fe-meta \
   --set starrocks.starrocksFESpec.storageSpec.storageSize=20Gi \
   --set starrocks.starrocksFESpec.storageSpec.storageClassName=standard \
   --set starrocks.starrocksFESpec.service.type=LoadBalancer \
-  --set starrocks.starrocksBeSpec.replicas=${REPLICAS} \
+  --set starrocks.starrocksBeSpec.replicas=${BE_REPLICAS} \
   --set starrocks.starrocksBeSpec.resources.requests.cpu=4 \
   --set starrocks.starrocksBeSpec.resources.requests.memory=4Gi \
   --set starrocks.starrocksBeSpec.resources.limits.memory=4Gi \

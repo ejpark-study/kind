@@ -17,5 +17,6 @@ brew install fzf
 brew install --cask font-jetbrains-mono-nerd-font
 brew install jq
 brew install hubble
+brew install lume
 
 brew upgrade

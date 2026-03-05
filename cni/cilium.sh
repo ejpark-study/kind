@@ -86,6 +86,21 @@ kind create cluster \
 
 kind get clusters
 
+# storage class: standard as retain
+kubectl delete sc standard
+
+cat <<EOF | kubectl apply -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: standard 
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true" # 기본으로 설정
+provisioner: rancher.io/local-path # kind의 기본 프로비저너
+reclaimPolicy: Retain # 데이터 보존
+volumeBindingMode: WaitForFirstConsumer
+EOF
+
 # CNI: Cilium
 export KUBE_API_SERVER_IP=$(kubectl get nodes -l node-role.kubernetes.io/control-plane -o yaml | yq '.items[0].status.addresses[] | select(.type=="InternalIP").address');
 export KUBE_API_SERVER_PORT=6443;
